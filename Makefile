@@ -4,7 +4,7 @@ setup:
 	bash scripts/bootstrap.sh
 
 setup-all:
-	bash scripts/bootstrap.sh --with-colmap
+	bash scripts/bootstrap.sh
 
 refs:
 	bash scripts/fetch_references.sh

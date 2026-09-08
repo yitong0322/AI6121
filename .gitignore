@@ -10,10 +10,9 @@ __pycache__/
 .idea/
 .DS_Store
 
-# Generated reconstructions and COLMAP workspaces
+# Generated reconstructions
 outputs/*
 !outputs/.gitkeep
-colmap-workspaces/
 *.log
 
 # Student-captured datasets (the bundled baseline datasets remain tracked)

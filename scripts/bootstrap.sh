@@ -2,12 +2,12 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WITH_COLMAP=0
 
 if [[ "${1:-}" == "--with-colmap" ]]; then
-  WITH_COLMAP=1
+  echo "COLMAP support is disabled because it performs SfM/MVS directly." >&2
+  exit 2
 elif [[ $# -gt 0 ]]; then
-  echo "Usage: $0 [--with-colmap]" >&2
+  echo "Usage: $0" >&2
   exit 2
 fi
 
@@ -38,14 +38,7 @@ sync_env ai6121-sfm "$PROJECT_ROOT/environment.yml"
 conda run -n ai6121-sfm python -m ipykernel install --user \
   --name ai6121-sfm --display-name "Python (AI6121 SfM)"
 
-if [[ "$WITH_COLMAP" -eq 1 ]]; then
-  sync_env ai6121-colmap "$PROJECT_ROOT/environment-colmap.yml"
-fi
-
 echo
 echo "Environment setup complete."
 echo "  Python baseline: conda activate ai6121-sfm"
-if [[ "$WITH_COLMAP" -eq 1 ]]; then
-  echo "  COLMAP benchmark: conda activate ai6121-colmap"
-fi
 

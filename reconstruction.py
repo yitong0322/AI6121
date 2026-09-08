@@ -29,10 +29,11 @@ class ReconstructionCfg:
     essential_ransac_thresh: float = 2.0
     pnp_reproj_thresh: float = 4.0
     triangulation_reproj_thresh: float = 4.0
+    pnp_reproj_thresholds: Tuple[float, ...] = (4.0, 6.0, 8.0)
     pnp_iterations: int = 100  # Reduced from 1000
     min_pnp_correspondences: int = 10
     max_failed_attempts: int = 3
-    bundle_every: int = 5  # Less frequent bundle adjustment
+    bundle_every: int = 10  # Avoid repeatedly optimizing a rapidly growing point set
     verbose: bool = True
     num_threads: int = 12  # For multithreading
 
@@ -269,20 +270,36 @@ class Reconstruction:
                 return
 
         if len(pts3d) >= self.cfg.min_pnp_correspondences:
-            R, tvec, inliers = estimate_pose_ransac(
-                np.array(pts3d).reshape(-1, 3),
-                np.array(pts2d).reshape(-1, 2),
-                self.cfg.K,
-                self.cfg.pnp_reproj_thresh,
-                iterations=self.cfg.pnp_iterations,
-            )
+            pose = None
+            accepted_threshold = None
+            for threshold in self.cfg.pnp_reproj_thresholds:
+                try:
+                    candidate = estimate_pose_ransac(
+                        np.array(pts3d).reshape(-1, 3),
+                        np.array(pts2d).reshape(-1, 2),
+                        self.cfg.K,
+                        threshold,
+                        iterations=self.cfg.pnp_iterations,
+                    )
+                except ValueError:
+                    continue
+                if candidate[2].sum() >= self.cfg.min_pnp_correspondences:
+                    pose = candidate
+                    accepted_threshold = threshold
+                    break
+            if pose is None:
+                raise RuntimeError("PnP failed at all reprojection thresholds")
+            R, tvec, inliers = pose
             if len(inliers) >= 4:
                 self.poses[img_idx] = (R, tvec.reshape(3, 1))
                 for idx in np.flatnonzero(inliers):
                     pt_objs[idx][0].observations[img_idx] = pt_objs[idx][1]
                 self.placed.append(img_idx)
                 self.unplaced.remove(img_idx)
-                logger.info(f"Added image {img_idx} with {len(inliers)} PnP inliers")
+                logger.info(
+                    f"Added image {img_idx} with {inliers.sum()} PnP inliers "
+                    f"at {accepted_threshold:.1f}px"
+                )
                 self._triangulate_new_matches(img_idx)
                 if pbar:
                     pbar.update(1)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate foreground masks suitable for COLMAP feature extraction."""
+"""Generate foreground masks for feature extraction."""
 
 import argparse
 import csv
@@ -99,7 +99,7 @@ def main() -> None:
             mask = suppress_vegetation(rgb, mask)
         coverage = float(np.count_nonzero(mask)) / mask.size
 
-        # COLMAP appends .png to the full source filename, including its extension.
+        # Preserve the source filename in the mask name for traceability.
         mask_path = masks_dir / f"{image_path.name}.png"
         cv2.imwrite(str(mask_path), mask)
 

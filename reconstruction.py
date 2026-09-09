@@ -5,13 +5,6 @@ import numpy as np
 import cv2
 from scipy.spatial.transform import Rotation as R
 from concurrent.futures import ThreadPoolExecutor
-from geometry import (
-    decompose_essential,
-    estimate_essential_ransac,
-    estimate_pose_ransac,
-    triangulate_points,
-    validate_triangulated_points,
-)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -28,12 +21,11 @@ class ReconstructionCfg:
     min_inliers_baseline: int = 10
     essential_ransac_thresh: float = 2.0
     pnp_reproj_thresh: float = 4.0
-    triangulation_reproj_thresh: float = 4.0
-    pnp_reproj_thresholds: Tuple[float, ...] = (4.0, 6.0, 8.0)
     pnp_iterations: int = 100  # Reduced from 1000
+    pnp_method: int = cv2.SOLVEPNP_EPNP  # Faster than P3P
     min_pnp_correspondences: int = 10
     max_failed_attempts: int = 3
-    bundle_every: int = 10  # Avoid repeatedly optimizing a rapidly growing point set
+    bundle_every: int = 5  # Less frequent bundle adjustment
     verbose: bool = True
     num_threads: int = 12  # For multithreading
 
@@ -73,6 +65,7 @@ class Reconstruction:
         """
     
         def compute_parallax(pts_i, pts_j, K, R, t, mask):
+            # OpenCV commonly encodes recoverPose inliers as 255 rather than 1.
             # Treat every non-zero entry as an inlier so the parallax set is not
             # accidentally emptied.
             inliers = mask.ravel().astype(bool)
@@ -80,16 +73,13 @@ class Reconstruction:
             pts_j = pts_j[inliers]
             if len(pts_i) == 0:
                 return 0.0
-            # Convert image points to normalized bearing vectors.
-            inv_K = np.linalg.inv(K)
-            v1 = (inv_K @ np.column_stack((pts_i, np.ones(len(pts_i)))).T).T
-            v2 = (inv_K @ np.column_stack((pts_j, np.ones(len(pts_j)))).T).T
-            v1 = v1[:, :2] / v1[:, 2:3]
-            v2 = v2[:, :2] / v2[:, 2:3]
+            # undistort & normalize to bearing vectors
+            v1 = cv2.undistortPoints(pts_i.reshape(-1,1,2), K, None).reshape(-1,2)
+            v2 = cv2.undistortPoints(pts_j.reshape(-1,1,2), K, None).reshape(-1,2)
             v1 = np.hstack([v1, np.ones((v1.shape[0],1))])
             v2 = np.hstack([v2, np.ones((v2.shape[0],1))])
-            # The relative pose maps camera-i rays into camera-j coordinates.
-            # Rotate camera-j rays back before comparing them.
+            # recoverPose maps camera-i rays into camera-j coordinates. Rotate
+            # camera-j rays back into camera-i coordinates before comparing them.
             v2_rot = (R.T @ v2.T).T
             cos_angle = np.sum(v1 * v2_rot, axis=1) / (
                 np.linalg.norm(v1, axis=1) * np.linalg.norm(v2_rot, axis=1)
@@ -102,19 +92,15 @@ class Reconstruction:
             if len(mlist) < self.cfg.min_inliers_baseline:
                 continue
             pts_i, pts_j = self._aligned_points(i, j)
-            try:
-                E, mask = estimate_essential_ransac(
-                    pts_i, pts_j, self.cfg.K,
-                    self.cfg.essential_ransac_thresh,
-                )
-            except ValueError:
+            E, mask = cv2.findEssentialMat(
+                pts_i, pts_j, self.cfg.K,
+                method=cv2.FM_RANSAC,
+                threshold=self.cfg.essential_ransac_thresh
+            )
+            if mask is None or mask.sum() < self.cfg.min_inliers_baseline:
                 continue
-            if mask.sum() < self.cfg.min_inliers_baseline:
-                continue
-            R, t, cheirality = decompose_essential(E, pts_i, pts_j, self.cfg.K, mask)
-            pose_mask = np.zeros_like(mask, dtype=bool)
-            pose_mask[mask] = cheirality
-            parallax = compute_parallax(pts_i, pts_j, self.cfg.K, R, t, pose_mask)
+            _, R, t, out_mask = cv2.recoverPose(E, pts_i, pts_j, self.cfg.K)
+            parallax = compute_parallax(pts_i, pts_j, self.cfg.K, R, t, out_mask)
             parallax_deg = np.degrees(parallax)
     
             # filter by parallax
@@ -122,7 +108,7 @@ class Reconstruction:
                 logger.debug(f"Rejected pair {(i, j)}: parallax {parallax_deg:.2f}° < {min_parallax_deg}°")
                 continue
     
-            inlier_count = int(np.count_nonzero(pose_mask))
+            inlier_count = int(np.count_nonzero(out_mask))
             scores.append(((i, j), len(mlist), inlier_count, parallax_deg))
     
         if not scores:
@@ -139,14 +125,15 @@ class Reconstruction:
     def initialize(self, baseline: Tuple[int, int]) -> None:
         i, j = baseline
         pts_i, pts_j, idxs_i, idxs_j = self._aligned_points(i, j, return_idxs=True)
-        E, mask = estimate_essential_ransac(
-            pts_i, pts_j, self.cfg.K, self.cfg.essential_ransac_thresh
+        E, mask = cv2.findEssentialMat(
+            pts_i, pts_j, self.cfg.K,
+            method=cv2.FM_RANSAC,
+            threshold=self.cfg.essential_ransac_thresh
         )
-        if mask.sum() < 15:
+        if mask is None or mask.sum() < 15:
             raise ValueError("Baseline failed due to insufficient inliers")
-        R, t, cheirality = decompose_essential(E, pts_i, pts_j, self.cfg.K, mask)
-        inliers = np.zeros_like(mask, dtype=bool)
-        inliers[mask] = cheirality
+        _, R, t, pose_mask = cv2.recoverPose(E, pts_i, pts_j, self.cfg.K)
+        inliers = pose_mask.ravel().astype(bool)
         if inliers.sum() < 15:
             raise ValueError("Pose recovery failed with low inliers")
         self.poses[i] = (np.eye(3), np.zeros((3, 1)))
@@ -270,36 +257,23 @@ class Reconstruction:
                 return
 
         if len(pts3d) >= self.cfg.min_pnp_correspondences:
-            pose = None
-            accepted_threshold = None
-            for threshold in self.cfg.pnp_reproj_thresholds:
-                try:
-                    candidate = estimate_pose_ransac(
-                        np.array(pts3d).reshape(-1, 3),
-                        np.array(pts2d).reshape(-1, 2),
-                        self.cfg.K,
-                        threshold,
-                        iterations=self.cfg.pnp_iterations,
-                    )
-                except ValueError:
-                    continue
-                if candidate[2].sum() >= self.cfg.min_pnp_correspondences:
-                    pose = candidate
-                    accepted_threshold = threshold
-                    break
-            if pose is None:
-                raise RuntimeError("PnP failed at all reprojection thresholds")
-            R, tvec, inliers = pose
-            if len(inliers) >= 4:
+            success, rvec, tvec, inliers = cv2.solvePnPRansac(
+                np.array(pts3d).reshape(-1, 3),
+                np.array(pts2d).reshape(-1, 2),
+                self.cfg.K,
+                distCoeffs=None,
+                iterationsCount=self.cfg.pnp_iterations,
+                reprojectionError=self.cfg.pnp_reproj_thresh,
+                flags=self.cfg.pnp_method  # Optimized solver
+            )
+            if success and inliers is not None and len(inliers) >= 4:
+                R, _ = cv2.Rodrigues(rvec)
                 self.poses[img_idx] = (R, tvec.reshape(3, 1))
-                for idx in np.flatnonzero(inliers):
+                for idx in inliers.ravel():
                     pt_objs[idx][0].observations[img_idx] = pt_objs[idx][1]
                 self.placed.append(img_idx)
                 self.unplaced.remove(img_idx)
-                logger.info(
-                    f"Added image {img_idx} with {inliers.sum()} PnP inliers "
-                    f"at {accepted_threshold:.1f}px"
-                )
+                logger.info(f"Added image {img_idx} with {len(inliers)} PnP inliers")
                 self._triangulate_new_matches(img_idx)
                 if pbar:
                     pbar.update(1)
@@ -340,11 +314,10 @@ class Reconstruction:
             return []
         pts_p = np.array([self.keypoints[p][i].pt for i in idxs_p], dtype=np.float64).T.reshape(2, -1)
         pts_n = np.array([self.keypoints[img_idx][i].pt for i in idxs_n], dtype=np.float64).T.reshape(2, -1)
-        pts3d = triangulate_points(P_j, P_i, pts_p.T, pts_n.T)
-        valid = validate_triangulated_points(
-            pts3d, R_j, t_j, self.poses[img_idx][0], self.poses[img_idx][1],
-            self.cfg.K, pts_p.T, pts_n.T, self.cfg.triangulation_reproj_thresh,
-        )
+        pts4d = cv2.triangulatePoints(P_j, P_i, pts_p, pts_n)
+        pts3d = cv2.convertPointsFromHomogeneous(pts4d.T).squeeze()
+        depths = pts3d[:, 2]
+        valid = depths > 0.1
         if valid.sum() < 2:
             return []
         img_p = self.images[p]
@@ -397,11 +370,10 @@ class Reconstruction:
         P_j = self.cfg.K @ np.hstack((R_j, t_j))
         pts_i = np.array([self.keypoints[i][idx].pt for idx in idxs_i], dtype=np.float64).T.reshape(2, -1)
         pts_j = np.array([self.keypoints[j][idx].pt for idx in idxs_j], dtype=np.float64).T.reshape(2, -1)
-        pts3d = triangulate_points(P_i.astype(np.float64), P_j.astype(np.float64), pts_i.T, pts_j.T)
-        valid_mask = validate_triangulated_points(
-            pts3d, R_i, t_i, R_j, t_j, self.cfg.K, pts_i.T, pts_j.T,
-            self.cfg.triangulation_reproj_thresh,
-        )
+        pts4d = cv2.triangulatePoints(P_i.astype(np.float64), P_j.astype(np.float64), pts_i, pts_j)
+        pts3d = cv2.convertPointsFromHomogeneous(pts4d.T).squeeze()
+        depths = pts3d[:, 2]
+        valid_mask = depths > 0.1
         if valid_mask.sum() < 2:
             raise ValueError("Not enough valid 3D points after triangulation")
         img_i = self.images[i]

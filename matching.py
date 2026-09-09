@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from matplotlib.cm import get_cmap
-from geometry import estimate_fundamental_ransac
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -91,14 +90,11 @@ class FeatureMatcher:
             pts_i = np.float32([self.kps[i][m.queryIdx].pt for m in mlist])
             pts_j = np.float32([self.kps[j][m.trainIdx].pt for m in mlist])
 
-            try:
-                _, mask = estimate_fundamental_ransac(
-                    pts_i, pts_j, self.cfg.ransac_thresh
-                )
-            except ValueError:
+            F, mask = cv2.findFundamentalMat(pts_i, pts_j, cv2.FM_RANSAC, self.cfg.ransac_thresh)
+            if mask is None or mask.sum() < self.cfg.min_inliers:
                 continue
 
-            inliers = [m for m, ok in zip(mlist, mask) if ok]
+            inliers = [m for m, ok in zip(mlist, mask.ravel()) if ok]
             if len(inliers) >= self.cfg.min_inliers:
                 filtered[(i, j)] = inliers
 

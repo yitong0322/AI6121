@@ -2,11 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-if [[ "${1:-}" == "--with-colmap" ]]; then
-  echo "COLMAP support is disabled because it performs SfM/MVS directly." >&2
-  exit 2
-elif [[ $# -gt 0 ]]; then
+if [[ $# -gt 0 ]]; then
   echo "Usage: $0" >&2
   exit 2
 fi

@@ -1,9 +1,6 @@
-.PHONY: setup setup-all refs smoke notebook
+.PHONY: setup refs smoke notebook
 
 setup:
-	bash scripts/bootstrap.sh
-
-setup-all:
 	bash scripts/bootstrap.sh
 
 refs:

@@ -1,8 +1,7 @@
 # Structure-from-Motion (SfM) Project Report
 
 > **AI6121 local setup:** see [PROJECT_SETUP.md](PROJECT_SETUP.md) for the
-> reproducible Python 3.10 environment, Scene A/B/C layout, reference repositories,
-> smoke test, and CUDA COLMAP benchmark workflow.
+> reproducible Python 3.10 environment and project-owned SfM workflow.
 
 
 This report presents the implementation of an incremental Structure-from-Motion (SfM) pipeline to reconstruct 3D geometry from a set of 2D images. Focusing on a progressive approach, the system starts with an initial stereo reconstruction and incrementally adds new views by estimating camera poses and triangulating new 3D points. The Middlebury Temple Ring dataset—comprising 46 pre-calibrated images—was used as the primary benchmark, a custom dataset of a house model was used with 68 images followed by the camera calibration and Lund university dataset of Park Gate of 34 images was used. Core components of the pipeline include feature extraction using SIFT, robust matching with Lowe’s ratio test and RANSAC-based fundamental matrix estimation, camera pose estimation via Perspective-n-Point (PnP), and bundle adjustment for global optimization. Optional colorization of the reconstructed point cloud was also implemented to enhance visual realism. The final model achieved a high-accuracy reconstruction with a mean reprojection error reduced from 2.5 to 0.72 pixels after bundle adjustment, yielding a sparse point cloud of 7,588 points. Visual results, evaluation metrics, and analysis are provided to validate the effectiveness of the pipeline and highlight areas for future enhancement.
